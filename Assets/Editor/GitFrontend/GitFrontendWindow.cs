@@ -842,7 +842,7 @@ public static class GitRunner
     {
         string raw = Run("rev-parse --abbrev-ref HEAD", repoRoot, out var err);
         return raw?.Trim();
-    }
+    } 
 }
 
 /// <summary>
