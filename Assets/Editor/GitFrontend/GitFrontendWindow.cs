@@ -538,7 +538,7 @@ public static class GitRunner
             return true;
 
         return false;
-    } 
+    }
 }
 
 /// <summary>
