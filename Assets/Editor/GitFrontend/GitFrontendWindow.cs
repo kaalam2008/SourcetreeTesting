@@ -7,8 +7,12 @@ using System.IO;
 using System.Text;
 
 /// <summary>
-/// Simple Git UI inside Unity: shows git status in an EditorWindow.
-/// Extend from here: add commit, diff, history, branches, etc.
+/// Simple Git UI inside Unity:
+/// - Status (changed files)
+/// - Stage / Unstage
+/// - Diff popup
+/// - Commit
+/// - Push
 /// </summary>
 public class GitFrontendWindow : EditorWindow
 {
@@ -17,6 +21,11 @@ public class GitFrontendWindow : EditorWindow
     private List<GitFileStatus> statusList = new List<GitFileStatus>();
     private string lastError;
     private bool autoDetectRepo = true;
+
+    // Commit / Push fields
+    private string commitMessage = "";
+    private string pushRemote = "origin";
+    private string pushBranch = ""; // empty = current branch (git decides)
 
     [MenuItem("Tools/Git Frontend")]
     public static void ShowWindow()
@@ -47,6 +56,7 @@ public class GitFrontendWindow : EditorWindow
         DrawRepoRootField();
         EditorGUILayout.Space();
 
+        // Top buttons
         using (new EditorGUILayout.HorizontalScope())
         {
             if (GUILayout.Button("Refresh Status", GUILayout.Height(25)))
@@ -54,16 +64,24 @@ public class GitFrontendWindow : EditorWindow
                 RefreshStatus();
             }
 
+            if (GUILayout.Button("Stage All", GUILayout.Height(25)))
+            {
+                StageAll();
+            }
+
             if (GUILayout.Button("Open System Git GUI", GUILayout.Height(25)))
             {
-                // Example: opens 'git gui' if installed
                 GitRunner.RunDetached("gui", repoRoot);
             }
         }
 
+        EditorGUILayout.Space();
+        DrawCommitAndPushArea();
+        EditorGUILayout.Space();
+
         if (!string.IsNullOrEmpty(lastError))
         {
-            EditorGUILayout.HelpBox("Git error:\n" + lastError, MessageType.Error);
+            EditorGUILayout.HelpBox("Git message:\n" + lastError, MessageType.Error);
         }
 
         EditorGUILayout.Space();
@@ -73,7 +91,7 @@ public class GitFrontendWindow : EditorWindow
     private void DrawHeader()
     {
         EditorGUILayout.LabelField("Unity Git Frontend", EditorStyles.boldLabel);
-        EditorGUILayout.LabelField("A simple in-editor UI for git status (extendable).", EditorStyles.miniLabel);
+        EditorGUILayout.LabelField("Status • Stage • Commit • Push", EditorStyles.miniLabel);
         EditorGUILayout.Space();
     }
 
@@ -108,6 +126,46 @@ public class GitFrontendWindow : EditorWindow
         }
     }
 
+    private void DrawCommitAndPushArea()
+    {
+        EditorGUILayout.LabelField("Commit & Push", EditorStyles.boldLabel);
+
+        // Commit row
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            EditorGUILayout.LabelField("Message:", GUILayout.Width(60));
+            commitMessage = EditorGUILayout.TextField(commitMessage);
+
+            if (GUILayout.Button("Commit", GUILayout.Width(80)))
+            {
+                Commit();
+            }
+
+            if (GUILayout.Button("Commit & Push", GUILayout.Width(120)))
+            {
+                if (Commit())
+                {
+                    Push();
+                }
+            }
+        }
+
+        // Push row
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            EditorGUILayout.LabelField("Remote:", GUILayout.Width(60));
+            pushRemote = EditorGUILayout.TextField(pushRemote, GUILayout.Width(100));
+
+            EditorGUILayout.LabelField("Branch:", GUILayout.Width(55));
+            pushBranch = EditorGUILayout.TextField(pushBranch);
+
+            if (GUILayout.Button("Push", GUILayout.Width(80)))
+            {
+                Push();
+            }
+        }
+    }
+
     private void DrawStatusList()
     {
         EditorGUILayout.LabelField("Changed Files", EditorStyles.boldLabel);
@@ -127,13 +185,29 @@ public class GitFrontendWindow : EditorWindow
                 GUILayout.Label(s.Code, GUILayout.Width(30));
                 GUILayout.Label(s.Path, GUILayout.ExpandWidth(true));
 
+                // Diff
                 if (GUILayout.Button("Diff", GUILayout.Width(50)))
                 {
                     ShowFileDiffPopup(s.Path);
                 }
 
-                // You can later add Stage/Unstage buttons here:
-                // if (GUILayout.Button("Stage", GUILayout.Width(60))) { ... }
+                // Stage / Unstage
+                if (IsStaged(s))
+                {
+                    if (GUILayout.Button("Unstage", GUILayout.Width(70)))
+                    {
+                        UnstageFile(s.Path);
+                        RefreshStatus();
+                    }
+                }
+                else
+                {
+                    if (GUILayout.Button("Stage", GUILayout.Width(60)))
+                    {
+                        StageFile(s.Path);
+                        RefreshStatus();
+                    }
+                }
             }
         }
 
@@ -143,9 +217,11 @@ public class GitFrontendWindow : EditorWindow
     private void ShowFileDiffPopup(string filePath)
     {
         string output = GitRunner.Run("diff -- " + QuotePath(filePath), repoRoot, out string error);
-        if (!string.IsNullOrEmpty(error))
+
+        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
         {
             UnityEngine.Debug.LogError("Git diff error: " + error);
+            lastError = error;
         }
 
         DiffViewerWindow.ShowDiff(filePath, output);
@@ -161,10 +237,116 @@ public class GitFrontendWindow : EditorWindow
         }
 
         string output = GitRunner.Run("status --porcelain", repoRoot, out string error);
-        lastError = error;
+
+        if (!GitRunner.IsBenignLineEndingWarning(error))
+            lastError = error;
+        else
+            lastError = null;
 
         statusList = GitStatusParser.ParseStatus(output);
         Repaint();
+    }
+
+    private void StageFile(string path)
+    {
+        GitRunner.Run("add -- " + QuotePath(path), repoRoot, out string error);
+        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git add error: " + error);
+            lastError = error;
+        }
+    }
+
+    private void UnstageFile(string path)
+    {
+        GitRunner.Run("restore --staged -- " + QuotePath(path), repoRoot, out string error);
+        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git restore --staged error: " + error);
+            lastError = error;
+        }
+    }
+
+    private void StageAll()
+    {
+        GitRunner.Run("add -A", repoRoot, out string error);
+        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git add -A error: " + error);
+            lastError = error;
+        }
+        RefreshStatus();
+    }
+
+    private bool Commit()
+    {
+        if (string.IsNullOrWhiteSpace(commitMessage))
+        {
+            EditorUtility.DisplayDialog("Commit", "Commit message is empty.", "OK");
+            return false;
+        }
+
+        string msgArg = "-m " + QuoteCommitMessage(commitMessage);
+        string output = GitRunner.Run("commit " + msgArg, repoRoot, out string error);
+
+        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git commit error: " + error);
+            lastError = error;
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(output))
+        {
+            UnityEngine.Debug.Log("Git commit output:\n" + output);
+        }
+
+        commitMessage = "";
+        RefreshStatus();
+        return true;
+    }
+
+    private void Push()
+    {
+        // If you specify remote and branch, use them. Otherwise, let git use its default.
+        string args;
+        if (!string.IsNullOrEmpty(pushRemote) && !string.IsNullOrEmpty(pushBranch))
+        {
+            args = "push " + pushRemote + " " + pushBranch;
+        }
+        else if (!string.IsNullOrEmpty(pushRemote) && string.IsNullOrEmpty(pushBranch))
+        {
+            // Just remote -> git push origin
+            args = "push " + pushRemote;
+        }
+        else
+        {
+            // No remote/branch specified -> git push (uses default tracking branch)
+            args = "push";
+        }
+
+        string output = GitRunner.Run(args, repoRoot, out string error);
+
+        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git push error: " + error);
+            lastError = error;
+        }
+        else
+        {
+            lastError = null;
+        }
+
+        if (!string.IsNullOrEmpty(output))
+        {
+            UnityEngine.Debug.Log("Git push output:\n" + output);
+        }
+    }
+
+    private static bool IsStaged(GitFileStatus s)
+    {
+        // staged if X is not space and not '?' (i.e., something in the index)
+        return !string.IsNullOrEmpty(s.X) && s.X != " " && s.X != "?";
     }
 
     /// <summary>
@@ -201,16 +383,27 @@ public class GitFrontendWindow : EditorWindow
             return "\"" + path.Replace("\"", "\\\"") + "\"";
         return path;
     }
+
+    private static string QuoteCommitMessage(string msg)
+    {
+        if (string.IsNullOrEmpty(msg)) return "\"\"";
+        msg = msg.Replace("\"", "\\\"");
+        return "\"" + msg + "\"";
+    }
 }
 
 /// <summary>
 /// Represents one line of `git status --porcelain`.
 /// Example line: " M Assets/Scripts/MyScript.cs"
+/// X = index status, Y = working tree status
 /// </summary>
 public class GitFileStatus
 {
-    public string Code;  // e.g. "M", "A", "??", "D"
-    public string Path;  // file path relative to repo root
+    public string X;    // index status
+    public string Y;    // work tree status
+    public string Path; // file path relative to repo root
+
+    public string Code => (X + Y).Trim();
 }
 
 /// <summary>
@@ -232,12 +425,14 @@ public static class GitStatusParser
                 if (line.Length < 3) continue;
 
                 // porcelain format: XY<space>PATH
-                string code = line.Substring(0, 2).Trim();
+                char x = line[0];
+                char y = line[1];
                 string path = line.Substring(3).Trim();
 
                 list.Add(new GitFileStatus
                 {
-                    Code = code,
+                    X = x.ToString(),
+                    Y = y.ToString(),
                     Path = path
                 });
             }
@@ -323,6 +518,26 @@ public static class GitRunner
         {
             UnityEngine.Debug.LogError("Failed to run git command: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Returns true if the error string is just a line-ending warning (CRLF/LF).
+    /// </summary>
+    public static bool IsBenignLineEndingWarning(string error)
+    {
+        if (string.IsNullOrEmpty(error))
+            return false;
+
+        if (error.Contains("LF will be replaced by CRLF"))
+            return true;
+
+        if (error.Contains("CRLF will be replaced by LF"))
+            return true;
+
+        if (error.Contains("the file will have its original line endings"))
+            return true;
+
+        return false;
     }
 }
 
