@@ -7,12 +7,15 @@ using System.IO;
 using System.Text;
 
 /// <summary>
-/// Simple Git UI inside Unity:
-/// - Status (changed files)
+/// Unity Git Frontend:
+/// - Show status
 /// - Stage / Unstage
 /// - Diff popup
 /// - Commit
 /// - Push
+/// - Show current branch
+/// - Remote & branch dropdowns
+/// - Checkout & Pull
 /// </summary>
 public class GitFrontendWindow : EditorWindow
 {
@@ -25,7 +28,14 @@ public class GitFrontendWindow : EditorWindow
     // Commit / Push fields
     private string commitMessage = "";
     private string pushRemote = "origin";
-    private string pushBranch = ""; // empty = current branch (git decides)
+    private string pushBranch = ""; // default: current branch if empty
+
+    // Branch / remote info
+    private List<string> remotes = new List<string>();
+    private List<string> localBranches = new List<string>();
+    private int selectedRemoteIndex = 0;
+    private int selectedBranchIndex = 0;
+    private string currentBranch = "";
 
     [MenuItem("Tools/Git Frontend")]
     public static void ShowWindow()
@@ -39,6 +49,11 @@ public class GitFrontendWindow : EditorWindow
         if (autoDetectRepo || string.IsNullOrEmpty(repoRoot))
         {
             repoRoot = FindRepoRoot(Application.dataPath);
+        }
+
+        if (!string.IsNullOrEmpty(repoRoot))
+        {
+            LoadGitMeta();
         }
     }
 
@@ -54,6 +69,9 @@ public class GitFrontendWindow : EditorWindow
         }
 
         DrawRepoRootField();
+        EditorGUILayout.Space();
+
+        DrawBranchAndRemoteArea();
         EditorGUILayout.Space();
 
         // Top buttons
@@ -91,7 +109,13 @@ public class GitFrontendWindow : EditorWindow
     private void DrawHeader()
     {
         EditorGUILayout.LabelField("Unity Git Frontend", EditorStyles.boldLabel);
-        EditorGUILayout.LabelField("Status • Stage • Commit • Push", EditorStyles.miniLabel);
+
+        string branchText = string.IsNullOrEmpty(currentBranch)
+            ? "Branch: (unknown)"
+            : "Branch: " + currentBranch;
+
+        EditorGUILayout.LabelField(branchText, EditorStyles.miniLabel);
+        EditorGUILayout.LabelField("Status • Stage • Commit • Push • Branch / Remote", EditorStyles.miniLabel);
         EditorGUILayout.Space();
     }
 
@@ -100,6 +124,7 @@ public class GitFrontendWindow : EditorWindow
         using (new EditorGUILayout.HorizontalScope())
         {
             EditorGUILayout.LabelField("Repo Root:", GUILayout.Width(80));
+            string oldRoot = repoRoot;
             repoRoot = EditorGUILayout.TextField(repoRoot ?? "");
 
             if (GUILayout.Button("Browse", GUILayout.Width(70)))
@@ -111,6 +136,12 @@ public class GitFrontendWindow : EditorWindow
                     autoDetectRepo = false;
                 }
             }
+
+            // If repo root changed manually, reload meta
+            if (oldRoot != repoRoot && !string.IsNullOrEmpty(repoRoot))
+            {
+                LoadGitMeta();
+            }
         }
 
         using (new EditorGUILayout.HorizontalScope())
@@ -121,7 +152,78 @@ public class GitFrontendWindow : EditorWindow
                 if (GUILayout.Button("Re-Detect", GUILayout.Width(80)))
                 {
                     repoRoot = FindRepoRoot(Application.dataPath);
+                    LoadGitMeta();
                 }
+            }
+
+            if (GUILayout.Button("Reload Git Info", GUILayout.Width(120)))
+            {
+                LoadGitMeta();
+            }
+        }
+    }
+
+    private void DrawBranchAndRemoteArea()
+    {
+        EditorGUILayout.LabelField("Branch & Remote", EditorStyles.boldLabel);
+
+        // Remote dropdown
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            EditorGUILayout.LabelField("Remote:", GUILayout.Width(60));
+
+            if (remotes != null && remotes.Count > 0)
+            {
+                int newIndex = EditorGUILayout.Popup(selectedRemoteIndex, remotes.ToArray());
+                if (newIndex != selectedRemoteIndex)
+                {
+                    selectedRemoteIndex = newIndex;
+                    pushRemote = remotes[selectedRemoteIndex];
+                }
+            }
+            else
+            {
+                EditorGUILayout.LabelField("(no remotes)", GUILayout.Width(120));
+            }
+
+            // Also show editable field
+            pushRemote = EditorGUILayout.TextField(pushRemote);
+        }
+
+        // Branch dropdown
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            EditorGUILayout.LabelField("Branch:", GUILayout.Width(60));
+
+            if (localBranches != null && localBranches.Count > 0)
+            {
+                int newIndex = EditorGUILayout.Popup(selectedBranchIndex, localBranches.ToArray());
+                if (newIndex != selectedBranchIndex)
+                {
+                    selectedBranchIndex = newIndex;
+                    pushBranch = localBranches[selectedBranchIndex];
+                }
+            }
+            else
+            {
+                EditorGUILayout.LabelField("(no local branches)", GUILayout.Width(140));
+            }
+
+            // Also show editable field
+            pushBranch = EditorGUILayout.TextField(pushBranch);
+        }
+
+        // Checkout & Pull
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            if (GUILayout.Button("Checkout Branch", GUILayout.Width(140)))
+            {
+                CheckoutSelectedBranch();
+            }
+
+            if (GUILayout.Button("Pull", GUILayout.Width(80)))
+            {
+                Pull();
             }
         }
     }
@@ -150,20 +252,12 @@ public class GitFrontendWindow : EditorWindow
             }
         }
 
-        // Push row
-        using (new EditorGUILayout.HorizontalScope())
-        {
-            EditorGUILayout.LabelField("Remote:", GUILayout.Width(60));
-            pushRemote = EditorGUILayout.TextField(pushRemote, GUILayout.Width(100));
-
-            EditorGUILayout.LabelField("Branch:", GUILayout.Width(55));
-            pushBranch = EditorGUILayout.TextField(pushBranch);
-
-            if (GUILayout.Button("Push", GUILayout.Width(80)))
-            {
-                Push();
-            }
-        }
+        // Info about where push will go
+        EditorGUILayout.LabelField(
+            $"Push target: {(string.IsNullOrEmpty(pushRemote) ? "(default remote)" : pushRemote)} " +
+            $"{(string.IsNullOrEmpty(pushBranch) ? "(tracking branch)" : pushBranch)}",
+            EditorStyles.miniLabel
+        );
     }
 
     private void DrawStatusList()
@@ -213,6 +307,8 @@ public class GitFrontendWindow : EditorWindow
 
         EditorGUILayout.EndScrollView();
     }
+
+    #region Git Operations
 
     private void ShowFileDiffPopup(string filePath)
     {
@@ -287,9 +383,10 @@ public class GitFrontendWindow : EditorWindow
         }
 
         string msgArg = "-m " + QuoteCommitMessage(commitMessage);
-        string output = GitRunner.Run("commit " + msgArg, repoRoot, out string error);
+        int exitCode;
+        string output = GitRunner.Run("commit " + msgArg, repoRoot, out string error, out exitCode);
 
-        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        if (exitCode != 0 && !GitRunner.IsBenignLineEndingWarning(error))
         {
             UnityEngine.Debug.LogError("Git commit error: " + error);
             lastError = error;
@@ -303,12 +400,12 @@ public class GitFrontendWindow : EditorWindow
 
         commitMessage = "";
         RefreshStatus();
+        LoadGitMeta(); // branch may not change, but good to refresh
         return true;
     }
 
     private void Push()
     {
-        // If you specify remote and branch, use them. Otherwise, let git use its default.
         string args;
         if (!string.IsNullOrEmpty(pushRemote) && !string.IsNullOrEmpty(pushBranch))
         {
@@ -316,12 +413,10 @@ public class GitFrontendWindow : EditorWindow
         }
         else if (!string.IsNullOrEmpty(pushRemote) && string.IsNullOrEmpty(pushBranch))
         {
-            // Just remote -> git push origin
             args = "push " + pushRemote;
         }
         else
         {
-            // No remote/branch specified -> git push (uses default tracking branch)
             args = "push";
         }
 
@@ -330,18 +425,15 @@ public class GitFrontendWindow : EditorWindow
 
         if (exitCode != 0 && !GitRunner.IsBenignLineEndingWarning(error))
         {
-            // Real error
             UnityEngine.Debug.LogError("Git push error: " + error);
             lastError = error;
         }
         else
         {
-            // Success (even if git wrote info to stderr)
             lastError = null;
 
             if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
             {
-                // Treat as info, not error
                 UnityEngine.Debug.Log("Git push info (stderr):\n" + error);
             }
         }
@@ -352,6 +444,141 @@ public class GitFrontendWindow : EditorWindow
         }
     }
 
+    private void Pull()
+    {
+        string args;
+
+        // Use explicit remote + branch if available, else let git decide
+        if (!string.IsNullOrEmpty(pushRemote) && !string.IsNullOrEmpty(pushBranch))
+        {
+            args = "pull " + pushRemote + " " + pushBranch;
+        }
+        else if (!string.IsNullOrEmpty(pushRemote) && string.IsNullOrEmpty(pushBranch))
+        {
+            args = "pull " + pushRemote;
+        }
+        else
+        {
+            args = "pull";
+        }
+
+        int exitCode;
+        string output = GitRunner.Run(args, repoRoot, out string error, out exitCode);
+
+        if (exitCode != 0 && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git pull error: " + error);
+            lastError = error;
+        }
+        else
+        {
+            lastError = null;
+
+            if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+            {
+                UnityEngine.Debug.Log("Git pull info (stderr):\n" + error);
+            }
+        }
+
+        if (!string.IsNullOrEmpty(output))
+        {
+            UnityEngine.Debug.Log("Git pull output (stdout):\n" + output);
+        }
+
+        RefreshStatus();
+        LoadGitMeta();
+    }
+
+    private void CheckoutSelectedBranch()
+    {
+        if (localBranches == null || localBranches.Count == 0)
+        {
+            EditorUtility.DisplayDialog("Checkout", "No local branches found.", "OK");
+            return;
+        }
+
+        string branchName = localBranches[Mathf.Clamp(selectedBranchIndex, 0, localBranches.Count - 1)];
+        int exitCode;
+        string output = GitRunner.Run("checkout " + QuotePath(branchName), repoRoot, out string error, out exitCode);
+
+        if (exitCode != 0 && !GitRunner.IsBenignLineEndingWarning(error))
+        {
+            UnityEngine.Debug.LogError("Git checkout error: " + error);
+            lastError = error;
+        }
+        else
+        {
+            lastError = null;
+        }
+
+        if (!string.IsNullOrEmpty(output))
+        {
+            UnityEngine.Debug.Log("Git checkout output:\n" + output);
+        }
+
+        RefreshStatus();
+        LoadGitMeta();
+    }
+
+    #endregion
+
+    #region Git Meta Helpers
+
+    private void LoadGitMeta()
+    {
+        if (string.IsNullOrEmpty(repoRoot) || !Directory.Exists(Path.Combine(repoRoot, ".git")))
+        {
+            currentBranch = "";
+            remotes = new List<string>();
+            localBranches = new List<string>();
+            return;
+        }
+
+        remotes = GitRunner.GetRemotes(repoRoot);
+        localBranches = GitRunner.GetLocalBranches(repoRoot);
+        currentBranch = GitRunner.GetCurrentBranch(repoRoot);
+
+        if (remotes == null) remotes = new List<string>();
+        if (localBranches == null) localBranches = new List<string>();
+
+        if (remotes.Count == 0)
+        {
+            remotes.Add("origin");
+        }
+
+        // Ensure we have some branch in list if currentBranch is known
+        if (localBranches.Count == 0 && !string.IsNullOrEmpty(currentBranch))
+        {
+            localBranches.Add(currentBranch);
+        }
+
+        // Select remote index based on pushRemote
+        selectedRemoteIndex = Mathf.Clamp(remotes.IndexOf(pushRemote), 0, remotes.Count - 1);
+        pushRemote = remotes[selectedRemoteIndex];
+
+        // Select branch index based on current branch (or pushBranch if set)
+        if (!string.IsNullOrEmpty(pushBranch))
+        {
+            selectedBranchIndex = localBranches.IndexOf(pushBranch);
+        }
+        if (selectedBranchIndex < 0 && !string.IsNullOrEmpty(currentBranch))
+        {
+            selectedBranchIndex = localBranches.IndexOf(currentBranch);
+        }
+        if (selectedBranchIndex < 0) selectedBranchIndex = 0;
+
+        if (localBranches.Count > 0)
+        {
+            selectedBranchIndex = Mathf.Clamp(selectedBranchIndex, 0, localBranches.Count - 1);
+            // If pushBranch is empty, use the selected branch
+            if (string.IsNullOrEmpty(pushBranch))
+                pushBranch = localBranches[selectedBranchIndex];
+        }
+        else
+        {
+            pushBranch = "";
+        }
+    }
 
     private static bool IsStaged(GitFileStatus s)
     {
@@ -400,11 +627,12 @@ public class GitFrontendWindow : EditorWindow
         msg = msg.Replace("\"", "\\\"");
         return "\"" + msg + "\"";
     }
+
+    #endregion
 }
 
 /// <summary>
 /// Represents one line of `git status --porcelain`.
-/// Example line: " M Assets/Scripts/MyScript.cs"
 /// X = index status, Y = working tree status
 /// </summary>
 public class GitFileStatus
@@ -453,7 +681,7 @@ public static class GitStatusParser
 }
 
 /// <summary>
-/// Low-level git runner. Wraps the git executable.
+/// Low-level git runner. Wraps the git executable and basic git info helpers.
 /// </summary>
 public static class GitRunner
 {
@@ -471,6 +699,7 @@ public static class GitRunner
 
     /// <summary>
     /// Run a git command and capture stdout + stderr.
+    /// (Convenience overload ignoring exit code)
     /// </summary>
     public static string Run(string arguments, string workingDirectory, out string error)
     {
@@ -478,6 +707,9 @@ public static class GitRunner
         return Run(arguments, workingDirectory, out error, out exitCode);
     }
 
+    /// <summary>
+    /// Run a git command and capture stdout + stderr + exitCode.
+    /// </summary>
     public static string Run(string arguments, string workingDirectory, out string error, out int exitCode)
     {
         error = null;
@@ -514,7 +746,6 @@ public static class GitRunner
             return null;
         }
     }
-
 
     /// <summary>
     /// Run a git command without waiting for output (for things like git gui).
@@ -558,9 +789,60 @@ public static class GitRunner
             return true;
 
         return false;
-    } 
+    }
 
-    /// testing this one more
+    // --- Git info helpers ---
+
+    public static List<string> GetRemotes(string repoRoot)
+    {
+        string raw = Run("remote", repoRoot, out var err);
+        var result = new List<string>();
+
+        if (!string.IsNullOrEmpty(raw))
+        {
+            using (var reader = new StringReader(raw))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    var trimmed = line.Trim();
+                    if (!string.IsNullOrEmpty(trimmed))
+                        result.Add(trimmed);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    public static List<string> GetLocalBranches(string repoRoot)
+    {
+        // --format to get just the short names
+        string raw = Run("branch --format=\"%(refname:short)\"", repoRoot, out var err);
+        var result = new List<string>();
+
+        if (!string.IsNullOrEmpty(raw))
+        {
+            using (var reader = new StringReader(raw))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    var trimmed = line.Trim().Trim('*').Trim();
+                    if (!string.IsNullOrEmpty(trimmed))
+                        result.Add(trimmed);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    public static string GetCurrentBranch(string repoRoot)
+    {
+        string raw = Run("rev-parse --abbrev-ref HEAD", repoRoot, out var err);
+        return raw?.Trim();
+    }
 }
 
 /// <summary>
