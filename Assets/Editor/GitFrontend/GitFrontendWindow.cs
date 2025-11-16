@@ -325,23 +325,33 @@ public class GitFrontendWindow : EditorWindow
             args = "push";
         }
 
-        string output = GitRunner.Run(args, repoRoot, out string error);
+        int exitCode;
+        string output = GitRunner.Run(args, repoRoot, out string error, out exitCode);
 
-        if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+        if (exitCode != 0 && !GitRunner.IsBenignLineEndingWarning(error))
         {
+            // Real error
             UnityEngine.Debug.LogError("Git push error: " + error);
             lastError = error;
         }
         else
         {
+            // Success (even if git wrote info to stderr)
             lastError = null;
+
+            if (!string.IsNullOrEmpty(error) && !GitRunner.IsBenignLineEndingWarning(error))
+            {
+                // Treat as info, not error
+                UnityEngine.Debug.Log("Git push info (stderr):\n" + error);
+            }
         }
 
         if (!string.IsNullOrEmpty(output))
         {
-            UnityEngine.Debug.Log("Git push output:\n" + output);
+            UnityEngine.Debug.Log("Git push output (stdout):\n" + output);
         }
     }
+
 
     private static bool IsStaged(GitFileStatus s)
     {
@@ -464,7 +474,14 @@ public static class GitRunner
     /// </summary>
     public static string Run(string arguments, string workingDirectory, out string error)
     {
+        int exitCode;
+        return Run(arguments, workingDirectory, out error, out exitCode);
+    }
+
+    public static string Run(string arguments, string workingDirectory, out string error, out int exitCode)
+    {
         error = null;
+        exitCode = -1;
 
         var psi = new ProcessStartInfo
         {
@@ -486,15 +503,18 @@ public static class GitRunner
                 string output = process.StandardOutput.ReadToEnd();
                 error = process.StandardError.ReadToEnd();
                 process.WaitForExit();
+                exitCode = process.ExitCode;
                 return output;
             }
         }
         catch (System.Exception ex)
         {
             error = ex.Message;
+            exitCode = -1;
             return null;
         }
     }
+
 
     /// <summary>
     /// Run a git command without waiting for output (for things like git gui).
