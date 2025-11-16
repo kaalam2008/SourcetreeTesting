@@ -540,7 +540,7 @@ public static class GitRunner
         return false;
     } 
 
-    /// testing this
+    /// testing this one more
 }
 
 /// <summary>
